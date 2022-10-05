@@ -1,0 +1,275 @@
+# Copyright 2022-present, Lorenzo Bonicelli, Pietro Buzzega, Matteo Boschini, Angelo Porrello, Simone Calderara.
+# All rights reserved.
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
+from argparse import Namespace
+import hashlib
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple
+import warnings
+
+import torch
+import torchvision.transforms as transforms
+from backbone.i3d import I3D_ResNet, i3d_resnet
+from torch.utils.data import DataLoader
+from torchvision.datasets import VisionDataset
+from torchvision.datasets.video_utils import VideoClips
+import torchvision
+
+from datasets.utils.continual_dataset import ContinualDataset
+from datasets.utils.validation import get_train_val
+from utils.conf import base_path_dataset as base_path
+
+
+class ConvertBCHWtoCBHW(torch.nn.Module):
+    """Convert tensor from (B, C, H, W) to (C, B, H, W)"""
+
+    def forward(self, vid: torch.Tensor) -> torch.Tensor:
+        return vid.permute(1, 0, 2, 3)
+
+
+class UBnormal(VisionDataset):
+    def __init__(
+        self,
+        root: str = base_path() + "/UBNORMAL",
+        annotation_path: str = base_path() + "/UBNORMAL/frame_level_gt",
+        frames_per_clip: int = 32,
+        step_between_clips: int = 32,
+        frame_rate: Optional[int] = None,
+        scene: int = -1,
+        train: bool = True,
+        transform: Optional[Callable] = None,
+        num_workers: int = 6,
+        _video_width: int = 0,
+        _video_height: int = 0,
+        _video_min_dimension: int = 0,
+        _audio_samples: int = 0,
+        download: bool = True,
+    ) -> None:
+        super().__init__(root)
+        self.frames_per_clip = frames_per_clip
+        self.step_between_clips = step_between_clips
+        self.frame_rate = frame_rate
+        self.train = train
+        self.transform = transform
+
+        if download:
+            self._load_obj_names()
+            self._download_split()
+            self._download_dataset() if not self._check_integrity() else print("UBNormal already downloaded")
+
+        self.frame_level_gt = {}
+        for vid in list(Path(annotation_path).glob("*.txt")):
+            self.frame_level_gt[vid.stem] = [l for l in Path(vid).read_text().split()]
+        self.test_video_names = []
+        with open(Path(root, "split/abnormal_test_video_names.txt"), "r") as f:
+            self.test_video_names += f.read().splitlines()
+        with open(Path(root, "split/normal_test_video_names.txt"), "r") as f:
+            self.test_video_names += f.read().splitlines()
+        if not train:
+            video_list = [str(x) for x in Path(root).rglob("*.mp4") if x.stem in self.test_video_names]
+        else:
+            video_list = [str(x) for x in Path(root).rglob("*.mp4") if x.stem not in self.test_video_names]
+
+        if scene > 0:
+            video_list = [x for x in video_list if f"Scene{scene}" in x]
+
+        H = self.get_hash(video_list)
+        precomputed_metadata = Path(root, "metadata", f"{H}.pt")
+
+        metadata = torch.load(precomputed_metadata) if precomputed_metadata.exists() else None
+
+        self.video_clips = VideoClips(
+            video_list,
+            frames_per_clip,
+            step_between_clips,
+            frame_rate,
+            num_workers=num_workers,
+            _precomputed_metadata=metadata,
+            output_format="TCHW"
+        )
+
+        if metadata is None:
+            precomputed_metadata.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(self.video_clips.metadata, precomputed_metadata)
+        else:
+            print(f"[Scene{scene:2d} - {'Train' if train else ' Test'}] Using precomputed metadata")
+        pass
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, float, torch.Tensor]:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            video_raw, _, info, video_idx = self.video_clips.get_clip(index)
+        video_path = self.video_clips.video_paths[video_idx]
+        if "abnormal" not in video_path:
+            label = torch.tensor(0.0, dtype=torch.int64)
+        else:
+            _, clip_idx = self.video_clips.get_clip_location(index)
+            frame_range = (clip_idx * self.frames_per_clip, (clip_idx + 1) * self.frames_per_clip)
+            label = torch.tensor(1.0, dtype=torch.int64) if any(self.frame_level_gt[Path(video_path).stem][frame_range[0]:frame_range[1]]) else torch.tensor(0.0, dtype=torch.int64)
+
+        if self.transform is not None:
+            video = self.transform(video_raw)
+        else:
+            video = video_raw
+
+        video_raw = torchvision.transforms.Resize((112, 112))(video_raw).permute(1, 0, 2, 3)
+        if self.train:
+            return video, label, video_raw
+        return video, label
+
+    def __len__(self) -> int:
+        return self.video_clips.num_clips()
+
+    def _load_obj_names(self) -> None:
+        f_path = Path(base_path(), "UBNORMAL/object_names_per_video.pkl")
+        if not f_path.exists():
+            print("UBNormal object names not found, downloading...")
+            import requests
+            url = "https://github.com/lilygeorgescu/UBnormal/blob/main/scripts/object_names_per_video.pkl?raw=true"
+            r = requests.get(url, allow_redirects=True)
+            f_path.parent.mkdir(parents=True, exist_ok=True)
+            Path(f_path).write_bytes(r.content)
+
+        import pickle
+
+        with open(f_path, "rb") as f:
+            self.obj_names_per_video = pickle.load(f)
+
+    @staticmethod
+    def _download_split() -> None:
+        split_path = Path(base_path(), "UBNORMAL/split")
+        if not split_path.exists():
+            split_path.mkdir(parents=True, exist_ok=True)
+            print("UBNormal split not found, downloading...")
+            import requests
+            files = ["abnormal_test", "abnormal_train", "abnormal_validation",
+                     "normal_test", "normal_train", "normal_validation"]
+            for f in files:
+                url = f"https://github.com/lilygeorgescu/UBnormal/blob/main/scripts/{f}_video_names.txt?raw=true"
+                r = requests.get(url, allow_redirects=True)
+                Path(split_path, f"{f}_video_names.txt").write_bytes(r.content)
+
+    @staticmethod
+    def _download_dataset() -> None:
+        url = "https://unimore365-my.sharepoint.com/:u:/g/personal/265925_unimore_it/EbN91bJXnl5CnDo9U3aFIGsB5BgNdWwzYaPYEk7vID_OTA?e=ZmDjiE"
+        from onedrivedownloader import download
+        download(url, filename=base_path() + "UBNORMAL.zip", unzip=True, unzip_path=base_path(), clean=True)
+
+    def _check_integrity(self) -> bool:
+        """Check the integrity of the dataset structure.
+
+        Returns:
+            bool: True if all the dataset directories are found, else False
+        """
+        return not any(not Path(self.root, f"Scene{d}").exists() for d in range(1, 30))
+
+    def get_hash(self, video_list: List[str]) -> str:
+        v = tuple(sorted(video_list))
+        h = hashlib.sha256()
+        h.update(str(v).encode())
+        h.update(str(self.frames_per_clip).encode())
+        h.update(str(self.step_between_clips).encode())
+        h.update(str(self.frame_rate).encode())
+        return h.hexdigest()[:16]
+
+
+class SequenceUBnormal(ContinualDataset):
+    NAME = 'seq-ubnormal'
+    SETTING = 'domain-il'
+    N_CLASSES_PER_TASK = 2
+    N_TASKS = 10
+
+    def get_data_loaders(self):
+        transform = self.get_transform()
+
+        test_transform = self.get_transform(train=False)
+
+        train_dataset = UBnormal(scene=self.i + 1, transform=transform)
+
+        if self.args.validation:
+            # TODO
+            raise NotImplementedError
+            train_dataset, test_dataset = get_train_val(train_dataset,
+                                                        test_transform, self.NAME)
+        else:
+            test_dataset = UBnormal(train=False, transform=transform, scene=self.i + 1)
+
+        train, test = self.store_loaders(train_dataset, test_dataset)
+
+        return train, test
+
+    @ staticmethod
+    def get_backbone() -> I3D_ResNet:
+        return i3d_resnet(depth=50, num_classes=2, dropout=0.6)
+
+    def store_loaders(self, train_dataset, test_dataset):
+
+        train_loader = DataLoader(train_dataset,
+                                  batch_size=self.args.batch_size, shuffle=True, num_workers=4, drop_last=True)
+        test_loader = DataLoader(test_dataset,
+                                 batch_size=self.args.batch_size, shuffle=False, num_workers=4, drop_last=True)
+        self.test_loaders.append(test_loader)
+        self.train_loader = train_loader
+
+        self.i += 1
+        return train_loader, test_loader
+
+    @staticmethod
+    def get_epochs() -> int:
+        return 10
+
+    @staticmethod
+    def get_normalization_transform():
+        mean = (0.43216, 0.394666, 0.37645)
+        std = (0.22803, 0.22145, 0.216989)
+        return transforms.Normalize(mean, std)
+
+    @staticmethod
+    def get_batch_size() -> int:
+        return 2
+
+    def get_minibatch_size(self) -> int:
+        return SequenceUBnormal.get_batch_size()
+
+    @staticmethod
+    def get_loss() -> torch.nn.Module:
+        return torch.nn.CrossEntropyLoss()
+
+    def get_transform(self, train: bool = True) -> transforms:
+        if train:
+            transform = transforms.Compose([
+                transforms.RandomResizedCrop((112, 112), scale=(
+                    0.5, 1.0), ratio=(0.75, 1.3333333333333333)),
+                transforms.ConvertImageDtype(torch.float32),
+                transforms.RandomHorizontalFlip(p=0.5),
+                # transforms.RandomChoice([
+
+                #     transforms.RandomGrayscale(p=0.2),
+
+                #     transforms.RandomApply(torch.nn.ModuleList([
+                #         transforms.ColorJitter(brightness=0.2, contrast=0.2,
+                #                                saturation=0.2, hue=0.02)]
+                #     ), p=0.5)]),
+
+                self.get_normalization_transform(),
+                ConvertBCHWtoCBHW()
+            ])
+        else:
+            transform = transforms.Compose([
+                transforms.Resize((256, 256)),
+                transforms.CenterCrop((112, 112)),
+                transforms.ConvertImageDtype(torch.float32),
+                self.get_normalization_transform(),
+                ConvertBCHWtoCBHW()
+            ])
+        return transform
+
+    @staticmethod
+    def get_scheduler(model, args: Namespace) -> torch.optim.lr_scheduler:
+        """
+        Returns the scheduler to be used for to the current dataset.
+        """
+        model.opt = torch.optim.Adam(model.net.parameters(), lr=args.lr, weight_decay=args.optim_wd)
+        return torch.optim.lr_scheduler.MultiStepLR(model.opt, milestones=[10], gamma=0.1)
