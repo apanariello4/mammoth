@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import hashlib
-from typing_extensions import Self
 import warnings
 from argparse import Namespace
 from pathlib import Path
