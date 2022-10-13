@@ -49,7 +49,7 @@ class UBnormal(VisionDataset):
         self.frame_rate = frame_rate
         self.train = train
         self.transform = transform
-        self.root = root if root else base_path() + "/UBNORMAL"
+        self.root = root + "/UBNORMAL" if root else base_path() + "/UBNORMAL"
 
         if download:
             self._load_obj_names()
@@ -60,14 +60,14 @@ class UBnormal(VisionDataset):
         for vid in list(Path(self.root, "frame_level_gt").glob("*.txt")):
             self.frame_level_gt[vid.stem] = [int(l) for l in Path(vid).read_text().split()]
         self.test_video_names = []
-        with open(Path(root, "split/abnormal_test_video_names.txt"), "r") as f:
+        with open(Path(self.root, "split/abnormal_test_video_names.txt"), "r") as f:
             self.test_video_names += f.read().splitlines()
-        with open(Path(root, "split/normal_test_video_names.txt"), "r") as f:
+        with open(Path(self.root, "split/normal_test_video_names.txt"), "r") as f:
             self.test_video_names += f.read().splitlines()
         if not train:
-            video_list = [str(x) for x in Path(root).rglob("*.mp4") if x.stem in self.test_video_names]
+            video_list = [str(x) for x in Path(self.root).rglob("*.mp4") if x.stem in self.test_video_names]
         else:
-            video_list = [str(x) for x in Path(root).rglob("*.mp4") if x.stem not in self.test_video_names]
+            video_list = [str(x) for x in Path(self.root).rglob("*.mp4") if x.stem not in self.test_video_names]
 
         if scene > 0:
             video_list = [x for x in video_list if f"Scene{scene}" in x]
