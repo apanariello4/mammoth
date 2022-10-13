@@ -23,6 +23,7 @@ from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 from datasets.utils.continual_dataset import ContinualDataset
 from datasets.utils.validation import get_train_val
 from utils.conf import base_path_dataset as base_path
+from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 
 
 class UBnormal(VisionDataset):
@@ -228,6 +229,7 @@ class SequenceUBnormal(ContinualDataset):
                                   batch_size=self.args.batch_size, shuffle=True, num_workers=4, drop_last=True)
         test_loader = DataLoader(test_dataset,
                                  batch_size=self.args.batch_size, shuffle=False, num_workers=4, drop_last=True)
+
         self.test_loaders.append(test_loader)
         self.train_loader = train_loader
 

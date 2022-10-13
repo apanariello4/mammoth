@@ -13,6 +13,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
 
+@dataclass
 class ContinualDataset:
     """
     Continual learning evaluation setting.

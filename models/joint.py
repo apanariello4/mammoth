@@ -43,7 +43,6 @@ class Joint(ContinualModel):
 
             # # for non-incremental joint training
             if len(dataset.test_loaders) != dataset.N_TASKS:
-
                 return
 
             # reinit network
