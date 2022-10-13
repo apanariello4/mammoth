@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import hashlib
-from typing_extensions import Self
 import warnings
 from argparse import Namespace
 from pathlib import Path
@@ -155,7 +154,7 @@ class UBnormal(VisionDataset):
         url = "https://unimore365-my.sharepoint.com/:u:/g/personal/265925_unimore_it/EbN91bJXnl5CnDo9U3aFIGsB5BgNdWwzYaPYEk7vID_OTA?e=iieGGj"
         from onedrivedownloader import download
         print("UBNormal dataset not found, downloading...")
-        download(url, filename=f'{self.root}/UBNORMAL.zip', unzip=True, unzip_path=self.root, clean=True)
+        download(url, filename=f'{self.root}/UBNORMAL.zip', unzip=True, unzip_path=Path(self.root).parent, clean=True)
 
     def _check_integrity(self) -> bool:
         """Check the integrity of the dataset structure.
