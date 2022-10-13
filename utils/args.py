@@ -42,6 +42,8 @@ def add_management_args(parser: ArgumentParser) -> None:
                         help='The random seed.')
     parser.add_argument('--notes', type=str, default=None,
                         help='Notes for this run.')
+    parser.add_argument('--data_path', type=str, default=None,
+                        help='Path to the dataset.')
 
     parser.add_argument('--non_verbose', default=0, choices=[0, 1], type=int, help='Make progress bars non verbose')
     parser.add_argument('--disable_log', default=0, choices=[0, 1], type=int, help='Enable csv logging')
