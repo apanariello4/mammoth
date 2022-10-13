@@ -219,8 +219,9 @@ class SequenceUBnormal(ContinualDataset):
         return self.get_data_loaders(scene=-self.N_TASKS)
 
     def get_backbone(self) -> torch.nn.Module:
+        checkpoint_path = self.args.data_path if self.args.data_path else "/data"
         return get_r2p1d_model(model_conf="R2P1_50_K700_M", num_classes=2, learner_layers=3,
-                               fine_tune_up_to="layer3", checkpoint_path=self.root + "/checkpoints")
+                               fine_tune_up_to="layer3", checkpoint_path=checkpoint_path + "/checkpoints")
 
     def store_loaders(self, train_dataset, test_dataset):
 
