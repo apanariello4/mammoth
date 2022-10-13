@@ -7,7 +7,7 @@ from torch.nn.parallel import DataParallel
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 
-def setup(rank, world_size):
+def setup(rank: int, world_size: int):
     host = os.environ['SLURM_NODELIST'].split(',')[0]
     ephemeral_port_range = 65535 - 32768
     port = 32768 + int(os.environ['SLURM_JOBID']) % ephemeral_port_range
@@ -23,12 +23,12 @@ def setup(rank, world_size):
     sys.stdout.flush()
 
 
-def wait_for_master():
+def wait_for_master() -> None:
     if 'MAMMOTH_RANK' in os.environ:
         dist.barrier()
 
 
-def make_ddp(model):
+def make_ddp(model) -> DDP:
     rank_command = f"scontrol show jobid -d {os.environ['SLURM_JOBID']} | grep ' Nodes='"
     rank_data = os.popen(rank_command).read().splitlines()
     world = {x.split("Nodes=")[1].split(" ")[0]: int(x.split('gpu:')[1].split('(')[0]) for x in rank_data}
@@ -61,14 +61,24 @@ def make_ddp(model):
 
 
 class CustomDP(DataParallel):
+    """When using DataParallel, getattr is called on the model, not the module.
+    This is a problem when we want to access the module's attributes, such as
+    the module's parameters. This class fixes that by first trying to access
+    the attribute on the model, and if that fails, it tries to access it on
+    the module.
+
+    This class also intercepts the setting of attributes, and if the attribute
+    is in the intercept_names list, it sets the attribute on the module instead
+    of the model.
+    """
 
     intercept_names = ['classifier', 'num_classes', 'set_return_prerelu']
 
     def __getattr__(self, name: str):
-        if name in self.intercept_names:
-            return getattr(self.module, name)
-        else:
+        try:
             return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
 
     def __setattr__(self, name: str, value) -> None:
         if name in self.intercept_names:

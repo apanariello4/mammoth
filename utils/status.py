@@ -3,6 +3,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
 import sys
 from datetime import datetime
 from time import time
@@ -14,9 +15,14 @@ class ProgressBar:
         self.old_time = 0
         self.running_sum = 0
         self.verbose = verbose
+        try:
+            col = os.get_terminal_size().columns
+            self.bar_size = 50 if col > 120 else 25
+        except OSError:
+            self.bar_size = 50
 
     def prog(self, i: int, max_iter: int, epoch: Union[int, str],
-                     task_number: int, loss: float) -> None:
+             task_number: Union[int, str], loss: float) -> None:
         """
         Prints out the progress bar on the stderr file.
         :param i: the current iteration
@@ -42,7 +48,7 @@ class ProgressBar:
             self.old_time = time()
         if i:  # not (i + 1) % 10 or (i + 1) == max_iter:
             progress = min(float((i + 1) / max_iter), 1)
-            progress_bar = ('█' * int(50 * progress)) + ('┈' * (50 - int(50 * progress)))
+            progress_bar = ('█' * int(self.bar_size * progress)) + ('┈' * (self.bar_size - int(self.bar_size * progress)))
             print('\r[ {} ] Task {} | epoch {}: |{}| {} ep/h | loss: {} |'.format(
                 datetime.now().strftime("%m-%d | %H:%M"),
                 task_number + 1 if isinstance(task_number, int) else task_number,
@@ -52,8 +58,9 @@ class ProgressBar:
                 round(loss, 8)
             ), file=sys.stderr, end='', flush=True)
 
+
 def progress_bar(i: int, max_iter: int, epoch: Union[int, str],
-                 task_number: int, loss: float) -> None:
+                 task_number: Union[int, str], loss: float) -> None:
     """
     Prints out the progress bar on the stderr file.
     :param i: the current iteration
