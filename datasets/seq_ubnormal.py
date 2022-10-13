@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import hashlib
+from typing_extensions import Self
 import warnings
 from argparse import Namespace
 from pathlib import Path
@@ -28,8 +29,7 @@ from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 class UBnormal(VisionDataset):
     def __init__(
         self,
-        root: str = base_path() + "/UBNORMAL",
-        annotation_path: str = base_path() + "/UBNORMAL/frame_level_gt",
+        root: str,
         frames_per_clip: int = 32,
         step_between_clips: int = 32,
         frame_rate: Optional[int] = None,
@@ -49,6 +49,7 @@ class UBnormal(VisionDataset):
         self.frame_rate = frame_rate
         self.train = train
         self.transform = transform
+        self.root = root if root else base_path() + "/UBNORMAL"
 
         if download:
             self._load_obj_names()
@@ -56,7 +57,7 @@ class UBnormal(VisionDataset):
             self._download_dataset() if not self._check_integrity() else None
 
         self.frame_level_gt = {}
-        for vid in list(Path(annotation_path).glob("*.txt")):
+        for vid in list(Path(self.root, "frame_level_gt").glob("*.txt")):
             self.frame_level_gt[vid.stem] = [int(l) for l in Path(vid).read_text().split()]
         self.test_video_names = []
         with open(Path(root, "split/abnormal_test_video_names.txt"), "r") as f:
@@ -123,7 +124,7 @@ class UBnormal(VisionDataset):
         return self.video_clips.num_clips()
 
     def _load_obj_names(self) -> None:
-        f_path = Path(base_path(), "UBNORMAL/object_names_per_video.pkl")
+        f_path = Path(self.root, "object_names_per_video.pkl")
         if not f_path.exists():
             print("UBNormal object names not found, downloading...")
             import requests
@@ -137,9 +138,8 @@ class UBnormal(VisionDataset):
         with open(f_path, "rb") as f:
             self.obj_names_per_video = pickle.load(f)
 
-    @staticmethod
-    def _download_split() -> None:
-        split_path = Path(base_path(), "UBNORMAL/split")
+    def _download_split(self) -> None:
+        split_path = Path(self.root, "split")
         if not split_path.exists():
             split_path.mkdir(parents=True, exist_ok=True)
             print("UBNormal split not found, downloading...")
@@ -151,12 +151,11 @@ class UBnormal(VisionDataset):
                 r = requests.get(url, allow_redirects=True)
                 Path(split_path, f"{f}_video_names.txt").write_bytes(r.content)
 
-    @staticmethod
-    def _download_dataset() -> None:
+    def _download_dataset(self) -> None:
         url = "https://unimore365-my.sharepoint.com/:u:/g/personal/265925_unimore_it/EbN91bJXnl5CnDo9U3aFIGsB5BgNdWwzYaPYEk7vID_OTA?e=iieGGj"
         from onedrivedownloader import download
         print("UBNormal dataset not found, downloading...")
-        download(url, filename=base_path() + "UBNORMAL.zip", unzip=True, unzip_path=base_path(), clean=True)
+        download(url, filename=f'{self.root}/UBNORMAL.zip', unzip=True, unzip_path=self.root, clean=True)
 
     def _check_integrity(self) -> bool:
         """Check the integrity of the dataset structure.
@@ -201,7 +200,7 @@ class SequenceUBnormal(ContinualDataset):
 
         test_transform = self.get_transform(train=False)
 
-        train_dataset = UBnormal(scene=curr_scene, transform=transform)
+        train_dataset = UBnormal(root=self.args.data_path, scene=curr_scene, transform=transform)
 
         if self.args.validation:
             # TODO
@@ -209,7 +208,7 @@ class SequenceUBnormal(ContinualDataset):
             train_dataset, test_dataset = get_train_val(train_dataset,
                                                         test_transform, self.NAME)
         else:
-            test_dataset = UBnormal(train=False, transform=test_transform, scene=curr_scene)
+            test_dataset = UBnormal(root=self.args.data_path, train=False, transform=test_transform, scene=curr_scene)
 
         train, test = self.store_loaders(train_dataset, test_dataset)
 
@@ -219,10 +218,9 @@ class SequenceUBnormal(ContinualDataset):
 
         return self.get_data_loaders(scene=-self.N_TASKS)
 
-    @staticmethod
-    def get_backbone() -> torch.nn.Module:
+    def get_backbone(self) -> torch.nn.Module:
         return get_r2p1d_model(model_conf="R2P1_50_K700_M", num_classes=2, learner_layers=3,
-                               fine_tune_up_to="layer3", checkpoint_path=base_path() + "checkpoints")
+                               fine_tune_up_to="layer3", checkpoint_path=self.root + "/checkpoints")
 
     def store_loaders(self, train_dataset, test_dataset):
 
