@@ -3,30 +3,26 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-from argparse import Namespace
 import hashlib
-from pathlib import Path
-from typing import Callable, List, Optional, Tuple
 import warnings
+from argparse import Namespace
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple, Union
 
 import torch
+import torchvision
 import torchvision.transforms as transforms
 from backbone.i3d import I3D_ResNet, i3d_resnet
+from backbone.r2p1d import get_r2p1d_model
+from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.datasets import VisionDataset
 from torchvision.datasets.video_utils import VideoClips
-import torchvision
 
 from datasets.utils.continual_dataset import ContinualDataset
 from datasets.utils.validation import get_train_val
 from utils.conf import base_path_dataset as base_path
-
-
-class ConvertBCHWtoCBHW(torch.nn.Module):
-    """Convert tensor from (B, C, H, W) to (C, B, H, W)"""
-
-    def forward(self, vid: torch.Tensor) -> torch.Tensor:
-        return vid.permute(1, 0, 2, 3)
+from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 
 
 class UBnormal(VisionDataset):
@@ -40,7 +36,7 @@ class UBnormal(VisionDataset):
         scene: int = -1,
         train: bool = True,
         transform: Optional[Callable] = None,
-        num_workers: int = 6,
+        num_workers: int = 4,
         _video_width: int = 0,
         _video_height: int = 0,
         _video_min_dimension: int = 0,
@@ -57,11 +53,11 @@ class UBnormal(VisionDataset):
         if download:
             self._load_obj_names()
             self._download_split()
-            self._download_dataset() if not self._check_integrity() else print("UBNormal already downloaded")
+            self._download_dataset() if not self._check_integrity() else None
 
         self.frame_level_gt = {}
         for vid in list(Path(annotation_path).glob("*.txt")):
-            self.frame_level_gt[vid.stem] = [l for l in Path(vid).read_text().split()]
+            self.frame_level_gt[vid.stem] = [int(l) for l in Path(vid).read_text().split()]
         self.test_video_names = []
         with open(Path(root, "split/abnormal_test_video_names.txt"), "r") as f:
             self.test_video_names += f.read().splitlines()
@@ -74,6 +70,9 @@ class UBnormal(VisionDataset):
 
         if scene > 0:
             video_list = [x for x in video_list if f"Scene{scene}" in x]
+        elif scene < 0:
+            """Loads all videos up to scene <abs(scene)>"""
+            video_list = [x for x in video_list if any(f"Scene{d}/" in x for d in range(1, abs(scene) + 1))]
 
         H = self.get_hash(video_list)
         precomputed_metadata = Path(root, "metadata", f"{H}.pt")
@@ -93,11 +92,11 @@ class UBnormal(VisionDataset):
         if metadata is None:
             precomputed_metadata.parent.mkdir(parents=True, exist_ok=True)
             torch.save(self.video_clips.metadata, precomputed_metadata)
+            print(f"Saved metadata for Scene {scene if scene > 0 else f'up to {abs(scene)}'} - {'Train' if train else ' Test'}")
         else:
-            print(f"[Scene{scene:2d} - {'Train' if train else ' Test'}] Using precomputed metadata")
-        pass
+            print(f"[Scene {scene if scene > 0 else f'up to {abs(scene)}'} - {'Train' if train else ' Test'}] Using precomputed metadata")
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, float, torch.Tensor]:
+    def __getitem__(self, index: int) -> Union[Tuple[Tensor, Tensor, Tensor], Tuple[Tensor, Tensor]]:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             video_raw, _, info, video_idx = self.video_clips.get_clip(index)
@@ -109,12 +108,13 @@ class UBnormal(VisionDataset):
             frame_range = (clip_idx * self.frames_per_clip, (clip_idx + 1) * self.frames_per_clip)
             label = torch.tensor(1.0, dtype=torch.int64) if any(self.frame_level_gt[Path(video_path).stem][frame_range[0]:frame_range[1]]) else torch.tensor(0.0, dtype=torch.int64)
 
-        if self.transform is not None:
-            video = self.transform(video_raw)
-        else:
-            video = video_raw
+        video_raw = torchvision.transforms.Resize((112, 112))(video_raw)
 
-        video_raw = torchvision.transforms.Resize((112, 112))(video_raw).permute(1, 0, 2, 3)
+        if self.transform is not None:
+            video: Tensor = self.transform(video_raw)
+        else:
+            video: Tensor = video_raw
+
         if self.train:
             return video, label, video_raw
         return video, label
@@ -153,8 +153,9 @@ class UBnormal(VisionDataset):
 
     @staticmethod
     def _download_dataset() -> None:
-        url = "https://unimore365-my.sharepoint.com/:u:/g/personal/265925_unimore_it/EbN91bJXnl5CnDo9U3aFIGsB5BgNdWwzYaPYEk7vID_OTA?e=ZmDjiE"
+        url = "https://unimore365-my.sharepoint.com/:u:/g/personal/265925_unimore_it/EbN91bJXnl5CnDo9U3aFIGsB5BgNdWwzYaPYEk7vID_OTA?e=iieGGj"
         from onedrivedownloader import download
+        print("UBNormal dataset not found, downloading...")
         download(url, filename=base_path() + "UBNORMAL.zip", unzip=True, unzip_path=base_path(), clean=True)
 
     def _check_integrity(self) -> bool:
@@ -166,6 +167,18 @@ class UBnormal(VisionDataset):
         return not any(not Path(self.root, f"Scene{d}").exists() for d in range(1, 30))
 
     def get_hash(self, video_list: List[str]) -> str:
+        """Metadata is cached to avoid recomputing it every time.
+           Since it can change if one changes the video list, or the
+           frames_per_clip, step_between_clips, or frame_rate parameters,
+           we compute a hash of all the parameters and the video list to
+           uniquely identify the metadata.
+
+        Args:
+            video_list (List[str]): List of video paths.
+
+        Returns:
+            str: Hash of the parameters and the video list.
+        """
         v = tuple(sorted(video_list))
         h = hashlib.sha256()
         h.update(str(v).encode())
@@ -180,13 +193,15 @@ class SequenceUBnormal(ContinualDataset):
     SETTING = 'domain-il'
     N_CLASSES_PER_TASK = 2
     N_TASKS = 10
+    NO_PREFETCH = True
 
-    def get_data_loaders(self):
+    def get_data_loaders(self, scene: Optional[int] = None) -> Tuple[DataLoader, DataLoader]:
+        curr_scene = scene if scene is not None else self.i + 1
         transform = self.get_transform()
 
         test_transform = self.get_transform(train=False)
 
-        train_dataset = UBnormal(scene=self.i + 1, transform=transform)
+        train_dataset = UBnormal(scene=curr_scene, transform=transform)
 
         if self.args.validation:
             # TODO
@@ -194,15 +209,20 @@ class SequenceUBnormal(ContinualDataset):
             train_dataset, test_dataset = get_train_val(train_dataset,
                                                         test_transform, self.NAME)
         else:
-            test_dataset = UBnormal(train=False, transform=transform, scene=self.i + 1)
+            test_dataset = UBnormal(train=False, transform=test_transform, scene=curr_scene)
 
         train, test = self.store_loaders(train_dataset, test_dataset)
 
         return train, test
 
-    @ staticmethod
-    def get_backbone() -> I3D_ResNet:
-        return i3d_resnet(depth=50, num_classes=2, dropout=0.6)
+    def get_joint_dataloaders(self):
+
+        return self.get_data_loaders(scene=-self.N_TASKS)
+
+    @staticmethod
+    def get_backbone() -> torch.nn.Module:
+        return get_r2p1d_model(model_conf="R2P1_50_K700_M", num_classes=2, learner_layers=3,
+                               fine_tune_up_to="layer3", checkpoint_path=base_path() + "checkpoints")
 
     def store_loaders(self, train_dataset, test_dataset):
 
@@ -210,6 +230,7 @@ class SequenceUBnormal(ContinualDataset):
                                   batch_size=self.args.batch_size, shuffle=True, num_workers=4, drop_last=True)
         test_loader = DataLoader(test_dataset,
                                  batch_size=self.args.batch_size, shuffle=False, num_workers=4, drop_last=True)
+
         self.test_loaders.append(test_loader)
         self.train_loader = train_loader
 
@@ -237,39 +258,34 @@ class SequenceUBnormal(ContinualDataset):
     def get_loss() -> torch.nn.Module:
         return torch.nn.CrossEntropyLoss()
 
-    def get_transform(self, train: bool = True) -> transforms:
-        if train:
-            transform = transforms.Compose([
-                transforms.RandomResizedCrop((112, 112), scale=(
-                    0.5, 1.0), ratio=(0.75, 1.3333333333333333)),
-                transforms.ConvertImageDtype(torch.float32),
-                transforms.RandomHorizontalFlip(p=0.5),
-                # transforms.RandomChoice([
+    def get_transform(self, train: bool = True) -> transforms.Compose:
 
-                #     transforms.RandomGrayscale(p=0.2),
+        crop = transforms.RandomCrop(224) if train else transforms.CenterCrop(224)
 
-                #     transforms.RandomApply(torch.nn.ModuleList([
-                #         transforms.ColorJitter(brightness=0.2, contrast=0.2,
-                #                                saturation=0.2, hue=0.02)]
-                #     ), p=0.5)]),
+        transform = transforms.Compose([
+            transforms.Resize(256),
+            crop,
+            transforms.ConvertImageDtype(torch.float32),
+            self.get_normalization_transform(),
+            ConvertBCHWtoCBHW(),
+        ])
 
-                self.get_normalization_transform(),
-                ConvertBCHWtoCBHW()
-            ])
-        else:
-            transform = transforms.Compose([
-                transforms.Resize((256, 256)),
-                transforms.CenterCrop((112, 112)),
-                transforms.ConvertImageDtype(torch.float32),
-                self.get_normalization_transform(),
-                ConvertBCHWtoCBHW()
-            ])
         return transform
 
     @staticmethod
-    def get_scheduler(model, args: Namespace) -> torch.optim.lr_scheduler:
+    def get_scheduler(model, args: Namespace) -> torch.optim.lr_scheduler._LRScheduler:
         """
         Returns the scheduler to be used for to the current dataset.
         """
-        model.opt = torch.optim.Adam(model.net.parameters(), lr=args.lr, weight_decay=args.optim_wd)
+        params = []
+        fine_tune = model.net.fine_tune_up_to
+        if fine_tune > 0:
+            params.append({"params": model.net.fc.parameters()})
+            for i in range(fine_tune, 5):
+                params.append({"params": getattr(model.net, f'layer{i}').parameters()})
+
+        else:
+            params.append({"params": model.net.parameters()})
+
+        model.opt = torch.optim.Adam(params, lr=args.lr, weight_decay=args.optim_wd)
         return torch.optim.lr_scheduler.MultiStepLR(model.opt, milestones=[10], gamma=0.1)
