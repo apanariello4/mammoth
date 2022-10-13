@@ -4,12 +4,13 @@
 # LICENSE file in the root directory of this source tree.
 
 from argparse import Namespace
-from typing import Tuple
+from dataclasses import dataclass
+from typing import List, Tuple
 
 import numpy as np
-import torch.nn as nn
-import torch.optim
-from torch.utils.data import DataLoader, Dataset
+from torch import nn as nn
+from torch.optim.lr_scheduler import _LRScheduler
+from torch.utils.data import DataLoader
 
 
 class ContinualDataset:
@@ -20,6 +21,7 @@ class ContinualDataset:
     SETTING: str
     N_CLASSES_PER_TASK: int
     N_TASKS: int
+    TRANSFORM: List[nn.Module]
 
     def __init__(self, args: Namespace) -> None:
         """
@@ -78,7 +80,7 @@ class ContinualDataset:
         raise NotImplementedError
 
     @staticmethod
-    def get_scheduler(model, args: Namespace) -> torch.optim.lr_scheduler._LRScheduler:
+    def get_scheduler(model, args: Namespace) -> _LRScheduler:
         """
         Returns the scheduler to be used for to the current dataset.
         """
@@ -97,7 +99,7 @@ class ContinualDataset:
         raise NotImplementedError
 
 
-def store_masked_loaders(train_dataset: Dataset, test_dataset: Dataset,
+def store_masked_loaders(train_dataset: ContinualDataset, test_dataset: ContinualDataset,
                          setting: ContinualDataset) -> Tuple[DataLoader, DataLoader]:
     """
     Divides the dataset into tasks.
@@ -128,7 +130,7 @@ def store_masked_loaders(train_dataset: Dataset, test_dataset: Dataset,
     return train_loader, test_loader
 
 
-def get_previous_train_loader(train_dataset: Dataset, batch_size: int,
+def get_previous_train_loader(train_dataset: ContinualDataset, batch_size: int,
                               setting: ContinualDataset) -> DataLoader:
     """
     Creates a dataloader for the previous task.

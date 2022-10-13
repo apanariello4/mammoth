@@ -6,20 +6,21 @@
 import math
 import sys
 from argparse import Namespace
-from typing import Tuple
+from contextlib import suppress
+from typing import List, Tuple
 
+import numpy as np
 import torch
 from datasets import get_dataset
 from datasets.utils.continual_dataset import ContinualDataset
 from models.utils.continual_model import ContinualModel
 
-from utils.loggers import *
+from utils.loggers import Logger, print_mean_accuracy
 from utils.status import ProgressBar
 
-try:
+with suppress(ImportError):
     import wandb
-except ImportError:
-    wandb = None
+
 
 def mask_classes(outputs: torch.Tensor, dataset: ContinualDataset, k: int) -> None:
     """
@@ -32,10 +33,10 @@ def mask_classes(outputs: torch.Tensor, dataset: ContinualDataset, k: int) -> No
     """
     outputs[:, 0:k * dataset.N_CLASSES_PER_TASK] = -float('inf')
     outputs[:, (k + 1) * dataset.N_CLASSES_PER_TASK:
-               dataset.N_TASKS * dataset.N_CLASSES_PER_TASK] = -float('inf')
+            dataset.N_TASKS * dataset.N_CLASSES_PER_TASK] = -float('inf')
 
 
-def evaluate(model: ContinualModel, dataset: ContinualDataset, last=False) -> Tuple[list, list]:
+def evaluate(model: ContinualModel, dataset: ContinualDataset, last=False) -> Tuple[List[float], List[float]]:
     """
     Evaluates the accuracy of the model for each past task.
     :param model: the model to be evaluated
@@ -87,7 +88,7 @@ def train(model: ContinualModel, dataset: ContinualDataset,
     print(args)
 
     if not args.nowand:
-        assert wandb is not None, "Wandb not installed, please install it or run without wandb"
+        assert 'wandb' in sys.modules, "Wandb not installed, please install it or run without wandb"
         wandb.init(project=args.wandb_project, entity=args.wandb_entity, config=vars(args))
         args.wandb_url = wandb.run.get_url()
 
@@ -110,18 +111,21 @@ def train(model: ContinualModel, dataset: ContinualDataset,
     print(file=sys.stderr)
     for t in range(dataset.N_TASKS):
         model.net.train()
+        if hasattr(dataset, 'NO_PREFETCH') and args.model == 'joint':
+            break
         train_loader, test_loader = dataset.get_data_loaders()
         if hasattr(model, 'begin_task'):
             model.begin_task(dataset)
         if t and not args.ignore_other_metrics:
             accs = evaluate(model, dataset, last=True)
-            results[t-1] = results[t-1] + accs[0]
+            results[t - 1] = results[t - 1] + accs[0]
             if dataset.SETTING == 'class-il':
-                results_mask_classes[t-1] = results_mask_classes[t-1] + accs[1]
+                results_mask_classes[t - 1] = results_mask_classes[t - 1] + accs[1]
 
         scheduler = dataset.get_scheduler(model, args)
         for epoch in range(model.args.n_epochs):
             if args.model == 'joint':
+                # This allows to populate the dataloaders list
                 continue
             for i, data in enumerate(train_loader):
                 if args.debug_mode and i > 3:
@@ -160,20 +164,22 @@ def train(model: ContinualModel, dataset: ContinualDataset,
             logger.log_fullacc(accs)
 
         if not args.nowand:
-            d2={'RESULT_class_mean_accs': mean_acc[0], 'RESULT_task_mean_accs': mean_acc[1],
-                **{f'RESULT_class_acc_{i}': a for i, a in enumerate(accs[0])},
-                **{f'RESULT_task_acc_{i}': a for i, a in enumerate(accs[1])}}
+            d2 = {'RESULT_class_mean_accs': mean_acc[0], 'RESULT_task_mean_accs': mean_acc[1],
+                  **{f'RESULT_class_acc_{i}': a for i, a in enumerate(accs[0])},
+                  **{f'RESULT_task_acc_{i}': a for i, a in enumerate(accs[1])}}
 
             wandb.log(d2)
 
-
+    if hasattr(dataset, 'NO_PREFETCH') and args.model == 'joint':
+        model.net.train()
+        results, results_mask_classes = model.end_task(dataset)
 
     if not args.disable_log and not args.ignore_other_metrics:
         logger.add_bwt(results, results_mask_classes)
         logger.add_forgetting(results, results_mask_classes)
         if model.NAME != 'icarl' and model.NAME != 'pnn':
             logger.add_fwt(results, random_results_class,
-                    results_mask_classes, random_results_task)
+                           results_mask_classes, random_results_task)
 
     if not args.disable_log:
         logger.write(vars(args))
