@@ -23,7 +23,6 @@ from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 from datasets.utils.continual_dataset import ContinualDataset
 from datasets.utils.validation import get_train_val
 from utils.conf import base_path_dataset as base_path
-from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 
 
 class UBnormal(VisionDataset):
