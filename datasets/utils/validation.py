@@ -17,8 +17,7 @@ from utils import create_if_not_exists
 
 class ValidationDataset(Dataset):
     def __init__(self, data: torch.Tensor, targets: np.ndarray,
-                 transform: Optional[nn.Module] = None,
-                  target_transform: Optional[nn.Module] = None) -> None:
+                 transform: transforms = None, target_transform: transforms = None) -> None:
         self.data = data
         self.targets = targets
         self.transform = transform
@@ -49,7 +48,7 @@ class ValidationDataset(Dataset):
         return img, target
 
 
-def get_train_val(train: Dataset, test_transform: nn.Module,
+def get_train_val(train: datasets, test_transform: transforms,
                   dataset: str, val_perc: float = 0.1):
     """
     Extract val_perc% of the training set as the validation set.
