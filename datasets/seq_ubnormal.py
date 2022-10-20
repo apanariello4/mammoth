@@ -19,10 +19,10 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import VisionDataset
 from torchvision.datasets.video_utils import VideoClips
 
+from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 from datasets.utils.continual_dataset import ContinualDataset
 from datasets.utils.validation import get_train_val
 from utils.conf import base_path_dataset as base_path
-from datasets.transforms.video_transforms import ConvertBCHWtoCBHW
 
 
 class UBnormal(VisionDataset):
@@ -48,7 +48,7 @@ class UBnormal(VisionDataset):
         self.frame_rate = frame_rate
         self.train = train
         self.transform = transform
-        self.root = root + "/UBNORMAL" if root else base_path() + "/UBNORMAL"
+        self.root = root + "/UBNORMAL" if root else base_path() + "UBNORMAL"
 
         if download:
             self._load_obj_names()
@@ -75,7 +75,7 @@ class UBnormal(VisionDataset):
             video_list = [x for x in video_list if any(f"Scene{d}/" in x for d in range(1, abs(scene) + 1))]
 
         H = self.get_hash(video_list)
-        precomputed_metadata = Path(root, "metadata", f"{H}.pt")
+        precomputed_metadata = Path(self.root, "metadata", f"{H}.pt")
 
         metadata = torch.load(precomputed_metadata) if precomputed_metadata.exists() else None
 
@@ -108,12 +108,12 @@ class UBnormal(VisionDataset):
             frame_range = (clip_idx * self.frames_per_clip, (clip_idx + 1) * self.frames_per_clip)
             label = torch.tensor(1.0, dtype=torch.int64) if any(self.frame_level_gt[Path(video_path).stem][frame_range[0]:frame_range[1]]) else torch.tensor(0.0, dtype=torch.int64)
 
-        video_raw = torchvision.transforms.Resize((112, 112))(video_raw)
+        video_raw: Tensor = torchvision.transforms.functional.resize(video_raw, (256, 256))
 
         if self.transform is not None:
-            video: Tensor = self.transform(video_raw)
+            video = self.transform(video_raw)
         else:
-            video: Tensor = video_raw
+            video = video_raw
 
         if self.train:
             return video, label, video_raw
@@ -259,10 +259,11 @@ class SequenceUBnormal(ContinualDataset):
     def get_transform(self, train: bool = True) -> transforms.Compose:
 
         crop = transforms.RandomCrop(224) if train else transforms.CenterCrop(224)
+        p = 0.5 if train else 0.0
 
         transform = transforms.Compose([
-            transforms.Resize(256),
             crop,
+            transforms.RandomHorizontalFlip(p=p),
             transforms.ConvertImageDtype(torch.float32),
             self.get_normalization_transform(),
             ConvertBCHWtoCBHW(),
