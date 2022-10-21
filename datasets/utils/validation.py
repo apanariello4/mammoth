@@ -10,14 +10,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-from torch.utils.data import Dataset
+from datasets.utils.continual_dataset import ContinualDataset
 
 from utils import create_if_not_exists
 
 
 class ValidationDataset(Dataset):
     def __init__(self, data: torch.Tensor, targets: np.ndarray,
-                 transform: transforms = None, target_transform: transforms = None) -> None:
+                 transform: Optional[nn.Module] = None, target_transform: Optional[nn.Module] = None) -> None:
         self.data = data
         self.targets = targets
         self.transform = transform
@@ -48,7 +48,7 @@ class ValidationDataset(Dataset):
         return img, target
 
 
-def get_train_val(train: datasets, test_transform: transforms,
+def get_train_val(train: ContinualDataset, test_transform: nn.Module,
                   dataset: str, val_perc: float = 0.1):
     """
     Extract val_perc% of the training set as the validation set.
